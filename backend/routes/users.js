@@ -82,7 +82,15 @@ router.get('/', authenticateToken, async (req, res) => {
     return res.status(403).json({ error: 'Access forbidden. Admins only.' });
   }
   try {
-    const users = await User.findAll({ attributes: ['id', 'username', 'role'] });
+    // حالا وب‌سایت‌های هر کاربر را نیز همراه اطلاعاتش دریافت می‌کنیم
+    const users = await User.findAll({
+      attributes: ['id', 'username', 'role'],
+      include: {
+        model: Website,
+        attributes: ['id', 'name'], // فقط id و name وب‌سایت کافی است
+        through: { attributes: [] }
+      }
+    });
     res.json(users);
   } catch (error) {
     res.status(500).json({ error: 'Something went wrong.' });
