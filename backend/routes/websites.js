@@ -1,6 +1,8 @@
 // backend/routes/websites.js
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
+const XLSX = require('xlsx');
 // مدل‌ها
 const Website = require('../models/website');
 const User = require('../models/user');
@@ -10,7 +12,11 @@ const RankHistory = require('../models/rankHistory');
 const authenticateToken = require('../middleware/authMiddleware');
 const { checkKeywordRank } = require('../services/rankChecker');
 
-// POST /api/websites - افزودن وب‌سایت جدید (فقط ادمین)
+// تنظیمات Multer برای آپلود فایل در حافظه
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
+
+// POST /api/websites - افزودن وب‌سایت جدید
 router.post('/', authenticateToken, async (req, res) => {
     if (req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Access forbidden. Admins only.' });
@@ -33,7 +39,7 @@ router.post('/', authenticateToken, async (req, res) => {
     }
 });
   
-// GET /api/websites - دریافت لیست تمام وب‌سایت‌ها (فقط ادمین)
+// GET /api/websites - دریافت لیست تمام وب‌سایت‌ها
 router.get('/', authenticateToken, async (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Access forbidden. Admins only.' });
@@ -64,7 +70,7 @@ router.get('/:websiteId', authenticateToken, async (req, res) => {
   }
 });
   
-// POST /api/websites/:websiteId/assign - اختصاص دسترسی به کاربر (فقط ادمین)
+// POST /api/websites/:websiteId/assign - اختصاص دسترسی به کاربر
 router.post('/:websiteId/assign', authenticateToken, async (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Access forbidden. Admins only.' });
@@ -84,7 +90,7 @@ router.post('/:websiteId/assign', authenticateToken, async (req, res) => {
   }
 });
 
-// **مسیر DELETE جدید برای لغو دسترسی یک کاربر از یک وب‌سایت**
+// DELETE /api/websites/:websiteId/assign/:userId - لغو دسترسی کاربر
 router.delete('/:websiteId/assign/:userId', authenticateToken, async (req, res) => {
     if (req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Access forbidden. Admins only.' });
@@ -93,12 +99,9 @@ router.delete('/:websiteId/assign/:userId', authenticateToken, async (req, res) 
       const { websiteId, userId } = req.params;
       const website = await Website.findByPk(websiteId);
       const user = await User.findByPk(userId);
-  
       if (!website || !user) {
         return res.status(404).json({ error: 'Website or User not found.' });
       }
-  
-      // استفاده از متد Sequelize برای حذف ارتباط
       await website.removeUser(user);
       res.json({ message: `Access for user ${user.username} to ${website.name} has been revoked.` });
     } catch (error) {
@@ -197,6 +200,38 @@ router.get('/:websiteId/keywords/:keywordId/history', authenticateToken, async (
     res.json(history);
   } catch (error) {
     res.status(500).json({ error: 'Something went wrong.' });
+  }
+});
+
+// **مسیر POST جدید برای آپلود فایل اکسل کلیدواژه‌ها**
+router.post('/:websiteId/keywords/upload', authenticateToken, upload.single('keywordsFile'), async (req, res) => {
+  try {
+    const { websiteId } = req.params;
+    const website = await Website.findByPk(websiteId);
+    if (!website) { return res.status(404).json({ error: 'Website not found.' }); }
+    const hasAccess = req.user.role === 'admin' || await website.hasUser(req.user.id);
+    if (!hasAccess || req.user.role === 'viewer') { return res.status(403).json({ error: 'Access forbidden.' }); }
+    if (!req.file) { return res.status(400).json({ error: 'No file uploaded.' }); }
+
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+    const keywordsToInsert = data
+      .flat()
+      .map(text => String(text).trim())
+      .filter(text => text.length > 0)
+      .map(text => ({ text, WebsiteId: websiteId }));
+
+    if (keywordsToInsert.length === 0) {
+      return res.status(400).json({ error: 'No keywords found in the file.' });
+    }
+    const result = await Keyword.bulkCreate(keywordsToInsert, { ignoreDuplicates: true });
+    res.json({ message: `${result.length} new keywords were added successfully.` });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to process the file.' });
   }
 });
 
